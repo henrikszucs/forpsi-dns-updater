@@ -54,9 +54,13 @@ Electron derives its `userData` folder from it, and it must match `APP_NAME` in
    regexes to map domain names to Forpsi internal IDs. Subdomains resolve to their root
    domain plus a host part (`findDomainIdForName`).
 4. **Update** (`dns.updateDnsForDomain`): loads `domain/domains-dns.php?id=<id>&new=1`,
+   refuses to continue unless the page mentions the root domain (`pageMentionsDomain`),
    parses the records, then POSTs `ak=record_save` (existing A record) or
-   `ak=record_add` (none yet). Skips the POST if the IP is already correct.
-5. **Verify**: reloads the DNS page and checks that the A record now holds the new IP.
+   `ak=record_add` (none yet). Skips the POST if the IP is already correct. Record names
+   are compared via `normalizeHostName` (`@`, FQDN, trailing dot); more than one A
+   record for the host is an error, never guessed.
+5. **Verify**: reloads the DNS page and requires exactly one A record for the host,
+   holding the new IP (`findVerifyProblem`). Never fall back to searching the page text.
 
 All HTTP is done with `node:https` and a manual `Cookie` header (`requestWithCookies`),
 with a browser-like User-Agent. HTML is parsed with regexes, so any Forpsi UI change
@@ -122,7 +126,9 @@ via WSLg). The CLI needs nothing extra.
   unreachable local URL.
 - Unit tests `require()` modules directly: `src/cli.js` and `scripts/build.js` only
   run `main()` when `require.main === module` and export their helpers;
-  `dns.js` exports `parseDnsRecords` / `findDomainIdForName` for tests.
+  `dns.js` exports its pure parsers/matchers (`parseDnsRecords`, `parseDomainsList`,
+  `findDomainIdForName`, `normalizeHostName`, `findARecords`, `findVerifyProblem`,
+  `pageMentionsDomain`) for tests.
 - `tests/electron.test.js`: binary loads, CLI under `ELECTRON_RUN_AS_NODE`, and the
   desktop smoke test via `tests/fixtures/electron-smoke.js` (starts `src/main.js`
   with an isolated `userData`, prints `SMOKE_OK` after the window loads, `SMOKE_FAIL`

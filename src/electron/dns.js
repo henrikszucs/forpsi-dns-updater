@@ -86,45 +86,45 @@ const requestWithCookies = async function(partition, targetUrl, options = {}) {
     });
 };
 
+const DOMAIN_NAME_PATTERN = "[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+";
+
 /**
- * Parses the domains list page (https://admin.forpsi.hu/domain/domains-list.php)
- * to find all registered domains and their internal IDs.
+ * Extracts { domain, id } pairs from the domains list page HTML.
  */
-const getDomainsList = async function(partition) {
-    console.log("[DNS] Fetching domains list from:", DOMAINS_LIST_URL);
-    const res = await requestWithCookies(partition, DOMAINS_LIST_URL);
-    
-    if (res.statusCode !== 200 || !res.html) {
-        throw new Error(`Failed to fetch domains list (HTTP ${res.statusCode})`);
-    }
-
-    const html = res.html;
+const parseDomainsList = function(html) {
     const domainsMap = new Map();
-
-    // Pattern 1: Table rows containing domain names and id links
-    const rowRegex = /<tr[\s\S]*?<\/tr>/gi;
     let match;
-    while ((match = rowRegex.exec(html)) !== null) {
-        const rowHtml = match[0];
-        const idMatch = rowHtml.match(/id=(\d+)/i);
-        const domainMatch = rowHtml.match(/>\s*([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+)\s*</i);
-        if (idMatch && domainMatch) {
-            const domain = domainMatch[1].toLowerCase();
-            const id = idMatch[1];
-            if (!domainsMap.has(domain)) {
-                domainsMap.set(domain, id);
-            }
-        }
-    }
 
-    // Pattern 2: Direct links to domains-detail.php?id= or domains-dns.php?id=
-    const linkRegex = /href=["'](?:https?:\/\/[^\/]+)?\/domain\/domains-(?:dns|detail)\.php\?id=(\d+)[^"']*["'][^>]*>([\s\S]*?)<\/a>/gi;
+    // Pattern 1: links to domains-dns.php / domains-detail.php whose text is the domain.
+    // These name the domain ID unambiguously, so they win over pattern 2.
+    const linkRegex = /href=["'][^"']*domains-(?:dns|detail)\.php\?(?:[^"']*?&(?:amp;)?)?id=(\d+)[^"']*["'][^>]*>([\s\S]*?)<\/a>/gi;
     while ((match = linkRegex.exec(html)) !== null) {
         const id = match[1];
         const rawText = match[2].replace(/<[^>]+>/g, "").trim().toLowerCase();
-        const domainMatch = rawText.match(/[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+/i);
-        if (domainMatch) {
+        const domainMatch = rawText.match(new RegExp(DOMAIN_NAME_PATTERN, "i"));
+        if (domainMatch && !domainsMap.has(domainMatch[0])) {
             domainsMap.set(domainMatch[0], id);
+        }
+    }
+
+    // Pattern 2: table rows with a domain name cell. Only a query-string "id=" counts
+    // (not client_id= etc.): prefer links to domains-*.php, otherwise the row must
+    // hold a single distinct id, as other links in the row may point elsewhere.
+    const rowRegex = /<tr[\s\S]*?<\/tr>/gi;
+    while ((match = rowRegex.exec(html)) !== null) {
+        const rowHtml = match[0];
+        const domainMatch = rowHtml.match(new RegExp(`>\\s*(${DOMAIN_NAME_PATTERN})\\s*<`, "i"));
+        if (!domainMatch) continue;
+        const domain = domainMatch[1].toLowerCase();
+        if (domainsMap.has(domain)) continue;
+
+        const pageIds = [...rowHtml.matchAll(/domains-[a-z]+\.php\?(?:[^"'\s>]*?&(?:amp;)?)?id=(\d+)/gi)].map(m => m[1]);
+        const anyIds = [...rowHtml.matchAll(/[?&](?:amp;)?id=(\d+)/gi)].map(m => m[1]);
+        const ids = [...new Set(pageIds.length > 0 ? pageIds : anyIds)];
+        if (ids.length === 1) {
+            domainsMap.set(domain, ids[0]);
+        } else if (ids.length > 1) {
+            console.warn(`[DNS] Skipping '${domain}' in domains list: ambiguous IDs ${ids.join(", ")}`);
         }
     }
 
@@ -132,9 +132,75 @@ const getDomainsList = async function(partition) {
     for (const [domain, id] of domainsMap.entries()) {
         result.push({ domain, id });
     }
+    return result;
+};
 
+/**
+ * Parses the domains list page (https://admin.forpsi.hu/domain/domains-list.php)
+ * to find all registered domains and their internal IDs.
+ */
+const getDomainsList = async function(partition) {
+    console.log("[DNS] Fetching domains list from:", DOMAINS_LIST_URL);
+    const res = await requestWithCookies(partition, DOMAINS_LIST_URL);
+
+    if (res.statusCode !== 200 || !res.html) {
+        throw new Error(`Failed to fetch domains list (HTTP ${res.statusCode})`);
+    }
+
+    const result = parseDomainsList(res.html);
     console.log(`[DNS] Found ${result.length} domain(s) in Forpsi account:`, result);
     return result;
+};
+
+/**
+ * True when the DNS page HTML mentions rootDomain as a whole name
+ * (not inside "notexample.com" or "example.com.hu").
+ */
+const pageMentionsDomain = function(html, rootDomain) {
+    const escaped = rootDomain.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(`(?<![a-z0-9-])${escaped}(?![a-z0-9-]|\\.[a-z0-9])`, "i").test(html);
+};
+
+/**
+ * Normalizes a record host name to the relative form of the form's "name" field:
+ * "" for the root domain, "home" for home.<rootDomain>. Accepts "@", FQDNs and trailing dots.
+ */
+const normalizeHostName = function(name, rootDomain) {
+    let host = String(name || "").trim().toLowerCase().replace(/\.$/, "");
+    const root = rootDomain.toLowerCase();
+    if (host === "@" || host === root) {
+        return "";
+    }
+    if (host.endsWith("." + root)) {
+        host = host.slice(0, -(root.length + 1));
+    }
+    return host;
+};
+
+/**
+ * All A records for the given host.
+ */
+const findARecords = function(records, host, rootDomain) {
+    const target = normalizeHostName(host, rootDomain);
+    return records.filter(r => r.type.toUpperCase() === "A" && normalizeHostName(r.name, rootDomain) === target);
+};
+
+/**
+ * Checks the reloaded DNS records after a save: the host must have exactly one A record,
+ * holding ip. Returns null when verified, otherwise the reason.
+ */
+const findVerifyProblem = function(records, host, rootDomain, ip) {
+    const matches = findARecords(records, host, rootDomain);
+    if (matches.length === 0) {
+        return "no A record found";
+    }
+    if (matches.length > 1) {
+        return `${matches.length} A records found (${matches.map(r => r.rdata).join(", ")})`;
+    }
+    if (matches[0].rdata !== ip) {
+        return `A record holds '${matches[0].rdata}'`;
+    }
+    return null;
 };
 
 /**
@@ -250,8 +316,7 @@ const updateDnsForDomain = async function(partition, domainName, currentIp) {
         throw new Error(`Domain '${cleanDomain}' was not found in your Forpsi domain list.`);
     }
 
-    const { domainId, rootDomain, host } = domainInfo;
-    const targetHost = host === "@" ? "" : host;
+    const { domainId, rootDomain, host: targetHost } = domainInfo;
     console.log(`[DNS] Resolved '${cleanDomain}' -> Domain ID: ${domainId} (Root: ${rootDomain}, Host: '${targetHost}')`);
 
     // Step 2: Fetch current DNS page
@@ -263,18 +328,21 @@ const updateDnsForDomain = async function(partition, domainName, currentIp) {
         throw new Error(`Failed to load DNS page for ${cleanDomain} (HTTP ${dnsRes.statusCode})`);
     }
 
+    // Guard against a wrongly parsed domain ID: never write to another domain's zone
+    if (!pageMentionsDomain(dnsRes.html, rootDomain)) {
+        throw new Error(`DNS page for domain ID ${domainId} does not mention '${rootDomain}'; refusing to change it.`);
+    }
+
     // Step 3: Parse existing DNS records
     const records = parseDnsRecords(dnsRes.html);
     console.log(`[DNS] Parsed ${records.length} existing DNS record(s):`, records);
 
-    // Look for matching A record
-    const matchingRecord = records.find(r => {
-        if (r.type !== "A") return false;
-        const rName = r.name.toLowerCase();
-        return rName === targetHost.toLowerCase() ||
-               rName === "" && targetHost === "" ||
-               rName === "@" && targetHost === "";
-    });
+    // Look for matching A record; several would make round-robin DNS serve stale IPs
+    const matches = findARecords(records, targetHost, rootDomain);
+    if (matches.length > 1) {
+        throw new Error(`Found ${matches.length} A records for '${cleanDomain}' (${matches.map(r => r.rdata).join(", ")}). Remove the extra ones in the Forpsi admin; only a single A record is kept updated.`);
+    }
+    const matchingRecord = matches[0] || null;
 
     let postParams = null;
 
@@ -356,39 +424,20 @@ const updateDnsForDomain = async function(partition, domainName, currentIp) {
     console.log(`[DNS] Verifying updated record on Forpsi...`);
     const verifyRes = await requestWithCookies(partition, dnsUrl);
     const updatedRecords = parseDnsRecords(verifyRes.html || "");
-    const verifiedRecord = updatedRecords.find(r => {
-        if (r.type !== "A") return false;
-        const rName = r.name.toLowerCase();
-        return rName === targetHost.toLowerCase() ||
-               rName === "" && targetHost === "" ||
-               rName === "@" && targetHost === "";
-    });
-
-    if (verifiedRecord && verifiedRecord.rdata === cleanIp) {
-        console.log(`[DNS] Verification successful! A-record for '${cleanDomain}' is confirmed set to ${cleanIp}.`);
-        return {
-            success: true,
-            domain: cleanDomain,
-            domainId: domainId,
-            ip: cleanIp,
-            updated: true,
-            message: `Successfully updated A record on Forpsi to ${cleanIp}.`
-        };
-    } else {
-        // Check if the IP exists anywhere in the DNS table
-        if (verifyRes.html && verifyRes.html.includes(cleanIp)) {
-            return {
-                success: true,
-                domain: cleanDomain,
-                domainId: domainId,
-                ip: cleanIp,
-                updated: true,
-                message: `DNS A record updated to ${cleanIp}.`
-            };
-        }
-
-        throw new Error(`Verification failed: Forpsi DNS table does not show IP ${cleanIp}. Current: '${verifiedRecord ? verifiedRecord.rdata : "Not found"}'`);
+    const problem = findVerifyProblem(updatedRecords, targetHost, rootDomain, cleanIp);
+    if (problem) {
+        throw new Error(`Verification failed for '${cleanDomain}' (expected ${cleanIp}): ${problem}.`);
     }
+
+    console.log(`[DNS] Verification successful! A-record for '${cleanDomain}' is confirmed set to ${cleanIp}.`);
+    return {
+        success: true,
+        domain: cleanDomain,
+        domainId: domainId,
+        ip: cleanIp,
+        updated: true,
+        message: `Successfully updated A record on Forpsi to ${cleanIp}.`
+    };
 };
 
 /**
@@ -423,5 +472,10 @@ module.exports = {
     updateDnsForDomain,
     updateAllDomains,
     findDomainIdForName,
-    parseDnsRecords
+    parseDnsRecords,
+    parseDomainsList,
+    pageMentionsDomain,
+    normalizeHostName,
+    findARecords,
+    findVerifyProblem
 };

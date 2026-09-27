@@ -91,5 +91,7 @@ build, `dns-updater-cli.cmd` runs the CLI and `config.json` goes in
   `--verbose` shows what was parsed.
 - DNS is only touched when the IP changes; each update is verified by reloading the
   DNS page.
+- Each host needs at most one A record. If Forpsi shows several for the same host, the
+  update fails with an error: delete the extra ones in the Forpsi admin.
 - Passwords in `conf/config.json` are plain text and `login` stores them only
   base64-encoded (both mode 600). On servers prefer the environment variables.

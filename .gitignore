@@ -1,0 +1,31 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+out/
+
+# Local config (may contain the Forpsi password); only the example is committed
+conf/*
+!conf/config.example.json
+
+# Local data and secrets
+.env
+*.env
+!deploy/*.env.example
+forpsi_credentials.json
+forpsi_cookies.json
+cli_config.json
+cli_state.json
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*:Zone.Identifier
+
+# Claude Code personal settings
+.claude/settings.local.json

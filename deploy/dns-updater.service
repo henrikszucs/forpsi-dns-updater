@@ -1,0 +1,29 @@
+# systemd unit for the headless DNS Updater.
+# Install: see README.md ("Run as a service").
+
+[Unit]
+Description=DNS Updater (keeps Forpsi DNS A records pointed at this server's public IP)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+# Persistent data (cookies, config, sync state) lives in /var/lib/dns-updater
+StateDirectory=dns-updater
+Environment=DNS_UPDATER_DATA_DIR=/var/lib/dns-updater
+# FORPSI_USERNAME, FORPSI_PASSWORD, DNS_UPDATER_DOMAINS, DNS_UPDATER_INTERVAL
+# (override /opt/dns-updater/conf/config.json, which is optional here)
+EnvironmentFile=/etc/dns-updater.env
+ExecStart=/usr/bin/env node /opt/dns-updater/src/cli.js run
+Restart=on-failure
+RestartSec=30
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+
+[Install]
+WantedBy=multi-user.target

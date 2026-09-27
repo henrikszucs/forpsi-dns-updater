@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8"/>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+        
+        <title>DNS Updater</title>
+
+        <link href="/icons/app-256.png" rel="icon" type="image/png"/>
+
+        <link href="/libs/beercss/beer.min.css" rel="stylesheet"/>
+        <script src="/libs/beercss/beer.min.js" type="module" async></script>
+        <script src="/libs/beercss/material-dynamic-colors.min.js" type="module" async></script>
+    
+        <link href="/index.css" rel="stylesheet"/>
+        <script src="/index.js" type="module" async></script>
+
+    </head>
+    <body>
+        <header class="fixed surface">
+            <nav>
+                <img class="circle" src="/icons/app-256.png"/>
+                <h5 class="max">DNS Updater</h5>
+                <div class="row no-wrap middle gap">
+                    <span id="header-auth-badge" class="chip small surface-variant">
+                        <i id="header-auth-icon">sync</i>
+                        <span id="header-auth-text">Checking...</span>
+                    </span>
+                    <button id="header-btn-logout" class="border transparent hide">
+                        <i>logout</i>
+                        <span>Logout</span>
+                    </button>
+                </div>
+            </nav>
+        </header>
+
+        <main class="responsive">
+            <!-- Forpsi Account & Direct Credentials Card -->
+            <article id="card-auth" class="round">
+                <div class="row middle">
+                    <i id="icon-auth-status" class="extra">account_circle</i>
+                    <div class="max">
+                        <h6>Forpsi Account</h6>
+                        <p id="text-auth-status" class="small-text">Log in with your Forpsi credentials to enable DNS automation.</p>
+                    </div>
+                </div>
+
+                <!-- Not Logged In: Username & Password Inputs -->
+                <div id="container-login-form">
+                    <div class="space"></div>
+                    <div id="field-username" class="field label border">
+                        <input id="input-username" type="text" autocomplete="username" />
+                        <label>Username / User ID</label>
+                        <output id="error-username" class="invalid">Please enter your username</output>
+                    </div>
+
+                    <div id="field-password" class="field label border">
+                        <input id="input-password" type="password" autocomplete="current-password" />
+                        <label>Password</label>
+                        <output id="error-password" class="invalid">Please enter your password</output>
+                    </div>
+
+                    <p id="text-auth-error" class="error-text small-text hide"></p>
+
+                    <button id="btn-login-submit" class="responsive">
+                        <i>login</i>
+                        <span>Login to Forpsi</span>
+                    </button>
+                </div>
+
+                <!-- Logged In Container -->
+                <div id="container-logged-in" class="hide">
+                    <div class="space"></div>
+                    <div class="row middle">
+                        <i class="primary-text">check_circle</i>
+                        <div class="max">
+                            <span>Logged in as: <strong id="text-logged-user">-</strong></span>
+                            <p class="small-text">Credentials saved securely. DNS records will update automatically.</p>
+                        </div>
+                    </div>
+                    <div class="space"></div>
+                    <div class="row">
+                        <button id="btn-logout" class="border small">
+                            <i>logout</i>
+                            <span>Logout & Switch Account</span>
+                        </button>
+                        <button id="btn-recheck-auth" class="border transparent small">
+                            <i>sync</i>
+                            <span>Verify Session</span>
+                        </button>
+                    </div>
+                </div>
+            </article>
+
+            <div class="space"></div>
+
+            <article class="round">
+                <p class="small-text">Current IP address</p>
+                <h4 id="text-ip">Loading...</h4>
+            </article>
+
+            <div class="space"></div>
+
+            <article class="round">
+                <div class="field label border">
+                    <input id="input-interval" type="number" min="1" step="1" value="5"/>
+                    <label>Update interval (minutes)</label>
+                </div>
+
+                <p>Next refresh in: <span id="text-countdown">-</span></p>
+
+                <button id="btn-refresh">
+                    <i>refresh</i>
+                    <span>Refresh now</span>
+                </button>
+            </article>
+
+            <div class="space"></div>
+
+            <article class="round">
+                <p class="small-text">Domains to keep pointed at this IP</p>
+
+                <div id="field-domain" class="field label border">
+                    <input id="input-domain" type="text"/>
+                    <label>Add domain (e.g. example.com)</label>
+                    <output class="invalid">Enter a valid domain</output>
+                </div>
+
+                <button id="btn-domain-add">
+                    <i>add</i>
+                    <span>Add domain</span>
+                </button>
+
+                <div class="space"></div>
+
+                <div id="list-domains" class="list border"></div>
+                <div class="space"></div>
+                <p id="text-sync-status" class="small-text">DNS Sync: Ready to synchronize.</p>
+            </article>
+        </main>
+    </body>
+</html>

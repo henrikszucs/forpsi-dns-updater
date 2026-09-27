@@ -1,0 +1,49 @@
+{
+    "name": "dns-updater",
+    "version": "1.0.0",
+    "description": "Dynamic DNS updater for Forpsi: keeps DNS A records pointed at your public IP by driving the Forpsi web admin (no API available).",
+    "private": true,
+    "author": "henrikszucs",
+    "homepage": "https://github.com/henrikszucs/forpsi-dns-updater#readme",
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/henrikszucs/forpsi-dns-updater.git"
+    },
+    "bugs": {
+        "url": "https://github.com/henrikszucs/forpsi-dns-updater/issues"
+    },
+    "keywords": [
+        "forpsi",
+        "dns",
+        "ddns",
+        "dynamic-dns",
+        "electron",
+        "cli"
+    ],
+    "type": "commonjs",
+    "main": "src/main.js",
+    "bin": {
+        "dns-updater": "src/cli.js"
+    },
+    "files": [
+        "src/",
+        "deploy/",
+        "conf/config.example.json"
+    ],
+    "scripts": {
+        "start": "electron .",
+        "cli": "node src/cli.js",
+        "build": "node scripts/build.js",
+        "build:win": "node scripts/build.js --platform win32 --arch x64",
+        "build:linux": "node scripts/build.js --platform linux --arch x64",
+        "test": "node --test tests/*.test.js",
+        "test:electron": "node --test tests/electron.test.js"
+    },
+    "engines": {
+        "node": ">=18"
+    },
+    "devDependencies": {
+        "@electron/packager": "^20.3.0",
+        "electron": "^43.3.0"
+    }
+}

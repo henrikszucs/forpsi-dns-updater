@@ -1,0 +1,12 @@
+{
+    "forpsi": {
+        "username": "your-forpsi-username",
+        "password": "your-forpsi-password"
+    },
+    "domains": [
+        "example.com",
+        "home.example.com"
+    ],
+    "intervalMinutes": 5,
+    "ipCheckUrl": "https://api.ipify.org?format=json"
+}

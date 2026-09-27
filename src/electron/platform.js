@@ -101,6 +101,17 @@ const createMemoryJar = function() {
             };
             store.set(keyOf(cookie), cookie);
         },
+        remove: async function(url, name) {
+            // Same matching as Electron's cookies.remove(url, name): host and path of url
+            const { hostname, pathname } = new URL(url);
+            for (const [key, c] of store) {
+                const domain = c.domain.startsWith(".") ? c.domain.slice(1) : c.domain;
+                const hostMatches = hostname === domain || hostname.endsWith("." + domain);
+                if (c.name === name && hostMatches && pathname.startsWith(c.path)) {
+                    store.delete(key);
+                }
+            }
+        },
         clear: async function() {
             store.clear();
         }
@@ -119,6 +130,7 @@ const getCookieJar = function(partition) {
         return {
             get: () => ses.cookies.get({}),
             set: (details) => ses.cookies.set(details),
+            remove: (url, name) => ses.cookies.remove(url, name),
             clear: () => ses.clearStorageData({
                 storages: ["cookies", "localstorage", "indexdb", "serviceworkers", "cachestorage"]
             })

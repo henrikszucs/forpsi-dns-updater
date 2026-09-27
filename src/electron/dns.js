@@ -56,6 +56,7 @@ const requestWithCookies = async function(partition, targetUrl, options = {}) {
         }, (res) => {
             if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
                 const redirectUrl = new URL(res.headers.location, targetUrl).toString();
+                res.resume();
                 return resolve({
                     statusCode: res.statusCode,
                     finalUrl: redirectUrl,
@@ -86,7 +87,16 @@ const requestWithCookies = async function(partition, targetUrl, options = {}) {
     });
 };
 
-const DOMAIN_NAME_PATTERN = "[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+";
+const IPV4_REGEX = /^(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)$/;
+
+/**
+ * True for a dotted-quad IPv4 address (the only value written into A records).
+ */
+const isValidIpv4 = function(ip) {
+    return typeof ip === "string" && IPV4_REGEX.test(ip);
+};
+
+const DOMAIN_NAME_PATTERN ="[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+";
 
 /**
  * Extracts { domain, id } pairs from the domains list page HTML.
@@ -228,6 +238,37 @@ const findDomainIdForName = function(targetDomain, availableDomains) {
 };
 
 /**
+ * Reads the record type of an edit row: the selected option of the "type" select
+ * (any attribute order, "selected" or selected="selected"), or a hidden "type" input.
+ * Returns null unless exactly one type is found.
+ */
+const parseRecordType = function(rowContent) {
+    const selectMatch = rowContent.match(/<select\b[^>]*\bname=["']type["'][^>]*>([\s\S]*?)<\/select>/i);
+    if (selectMatch) {
+        const selected = [];
+        for (const opt of selectMatch[1].matchAll(/<option\b([^>]*)>/gi)) {
+            const attrs = opt[1];
+            // Look for the attribute name only outside quoted values
+            if (!/\bselected\b/i.test(attrs.replace(/"[^"]*"|'[^']*'/g, ""))) {
+                continue;
+            }
+            const valueMatch = attrs.match(/\bvalue\s*=\s*["']([^"']*)["']/i);
+            if (valueMatch) {
+                selected.push(valueMatch[1].trim().toUpperCase());
+            }
+        }
+        return selected.length === 1 && selected[0] ? selected[0] : null;
+    }
+
+    const inputMatch = rowContent.match(/<input\b[^>]*\bname=["']type["'][^>]*>/i);
+    if (inputMatch) {
+        const valueMatch = inputMatch[0].match(/\bvalue\s*=\s*["']([^"']*)["']/i);
+        return valueMatch && valueMatch[1].trim() ? valueMatch[1].trim().toUpperCase() : null;
+    }
+    return null;
+};
+
+/**
  * Parses all DNS records and their edit rows from domains-dns.php HTML.
  */
 const parseDnsRecords = function(html) {
@@ -247,13 +288,11 @@ const parseDnsRecords = function(html) {
         const r_ID = rIdMatch ? rIdMatch[1] : null;
         if (!r_ID) continue;
 
-        // Selected type
-        const typeSelectMatch = rowContent.match(/<select\s+name="type"[^>]*>([\s\S]*?)<\/select>/i);
-        let type = "A";
-        if (typeSelectMatch) {
-            const optMatch = typeSelectMatch[1].match(/<option\s+value="([^"]+)"\s+selected>/i) ||
-                             typeSelectMatch[1].match(/<option\s+selected\s+value="([^"]+)">/i);
-            if (optMatch) type = optMatch[1];
+        // Record type: never guessed, a row whose type cannot be read is skipped
+        const type = parseRecordType(rowContent);
+        if (!type) {
+            console.warn(`[DNS] Skipping record ${r_ID}: could not read its type.`);
+            continue;
         }
 
         // Host name input
@@ -304,7 +343,10 @@ const parseDnsRecords = function(html) {
  */
 const updateDnsForDomain = async function(partition, domainName, currentIp) {
     const cleanDomain = domainName.trim().toLowerCase();
-    const cleanIp = currentIp.trim();
+    const cleanIp = String(currentIp || "").trim();
+    if (!isValidIpv4(cleanIp)) {
+        throw new Error(`Refusing to update '${cleanDomain}': '${cleanIp}' is not a valid IPv4 address.`);
+    }
 
     console.log(`[DNS] Starting DNS update for '${cleanDomain}' to IP: ${cleanIp}`);
 
@@ -440,10 +482,20 @@ const updateDnsForDomain = async function(partition, domainName, currentIp) {
     };
 };
 
+// Tail of the running updateAllDomains calls; each waits for the previous one
+let updateQueue = Promise.resolve();
+
 /**
- * Updates DNS A records for all configured domains in the list.
+ * Updates DNS A records for all configured domains in the list. Calls run one after
+ * another: overlapping runs could each record_add a new A record for the same host.
  */
-const updateAllDomains = async function(partition, domainNames, currentIp) {
+const updateAllDomains = function(partition, domainNames, currentIp) {
+    const run = updateQueue.then(() => updateAllDomainsNow(partition, domainNames, currentIp));
+    updateQueue = run.catch(() => {});
+    return run;
+};
+
+const updateAllDomainsNow = async function(partition, domainNames, currentIp) {
     if (!domainNames || domainNames.length === 0) {
         return [];
     }
@@ -472,6 +524,7 @@ module.exports = {
     updateDnsForDomain,
     updateAllDomains,
     findDomainIdForName,
+    isValidIpv4,
     parseDnsRecords,
     parseDomainsList,
     pageMentionsDomain,

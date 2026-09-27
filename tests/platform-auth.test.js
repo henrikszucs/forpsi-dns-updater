@@ -62,6 +62,17 @@ test.describe("platform", () => {
         await jar.clear();
         assert.deepEqual(await jar.get(), []);
     });
+
+    test.it("memory jar removes cookies by URL and name", async () => {
+        const jar = platform.getCookieJar(newPartition());
+        await jar.set({ domain: ".forpsi.hu", path: "/", name: "sid", value: "1" });
+        await jar.set({ domain: ".forpsi.hu", path: "/", name: "lang", value: "hu" });
+        await jar.set({ domain: "other.example", path: "/", name: "sid", value: "2" });
+
+        await jar.remove("https://admin.forpsi.hu/", "sid");
+        const left = (await jar.get()).map((c) => `${c.domain}:${c.name}`).sort();
+        assert.deepEqual(left, [".forpsi.hu:lang", "other.example:sid"]);
+    });
 });
 
 test.describe("credentials", () => {
@@ -97,6 +108,40 @@ test.describe("credentials", () => {
         auth.saveCredentials("user", "s3cret");
         assert.equal(auth.clearCredentials(), true);
         assert.equal(auth.getSavedCredentials(), null);
+    });
+});
+
+test.describe("Set-Cookie handling", () => {
+    const now = Date.parse("2026-09-27T12:00:00Z");
+
+    test.it("reads Max-Age and Expires, Max-Age winning", () => {
+        const [a, b, c] = auth.parseSetCookieHeaders([
+            "sid=abc=def; Path=/; Max-Age=60; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly",
+            "lang=hu; Expires=Wed, 30 Sep 2026 12:00:00 GMT",
+            "plain=1"
+        ], now);
+        assert.equal(a.value, "abc=def");
+        assert.equal(a.httpOnly, true);
+        assert.equal(a.expired, false);
+        assert.equal(a.expirationDate, now / 1000 + 60);
+        assert.equal(b.expirationDate, Date.parse("2026-09-30T12:00:00Z") / 1000);
+        assert.equal(c.expired, false);
+        assert.equal(c.expirationDate, undefined);
+    });
+
+    test.it("marks deleted cookies as expired", () => {
+        const cookies = auth.parseSetCookieHeaders([
+            "sid=deleted; Expires=Thu, 01 Jan 1970 00:00:01 GMT; Path=/",
+            "lang=x; Max-Age=0"
+        ], now);
+        assert.deepEqual(cookies.map((c) => c.expired), [true, true]);
+    });
+
+    test.it("an expired Set-Cookie deletes the stored cookie instead of storing it", async () => {
+        const jar = platform.getCookieJar(newPartition());
+        await auth.applySetCookies(jar, auth.parseSetCookieHeaders(["PHPSESSID=abc; Path=/", "lang=hu; Path=/"]));
+        await auth.applySetCookies(jar, auth.parseSetCookieHeaders(["PHPSESSID=deleted; Max-Age=0; Path=/"]));
+        assert.deepEqual((await jar.get()).map((c) => [c.name, c.value]), [["lang", "hu"]]);
     });
 });
 

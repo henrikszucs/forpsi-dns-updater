@@ -20,7 +20,6 @@ const CONFIG_FILE_NAME = "config.json";
 const LEGACY_CONFIG_FILE_NAME = "cli_config.json";
 const STATE_FILE_NAME = "cli_state.json";
 const DOMAIN_REGEX = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i;
-const IPV4_REGEX = /^(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)$/;
 
 const USAGE = `DNS Updater - headless CLI
 
@@ -259,7 +258,7 @@ const getPublicIp = function() {
                 try {
                     ip = String(JSON.parse(body).ip || "").trim();
                 } catch {}
-                if (!IPV4_REGEX.test(ip)) {
+                if (!dns.isValidIpv4(ip)) {
                     return reject(new Error(`IP lookup returned an invalid IPv4 address: '${ip}'`));
                 }
                 resolve(ip);

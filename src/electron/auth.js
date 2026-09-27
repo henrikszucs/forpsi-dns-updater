@@ -220,13 +220,14 @@ const saveCookies = async function(partition) {
 };
 
 /**
- * Parses Set-Cookie headers into cookie objects
+ * Parses Set-Cookie headers into cookie objects. expirationDate (Unix seconds) comes
+ * from Max-Age or Expires; expired is true when the server deletes the cookie.
  */
-const parseSetCookieHeaders = function(rawHeaders) {
+const parseSetCookieHeaders = function(rawHeaders, now = Date.now()) {
     if (!rawHeaders) return [];
     const setCookieList = Array.isArray(rawHeaders) ? rawHeaders : [rawHeaders];
     const parsed = [];
-    
+
     for (const str of setCookieList) {
         if (!str) continue;
         const parts = str.split(";").map(p => p.trim());
@@ -235,24 +236,70 @@ const parseSetCookieHeaders = function(rawHeaders) {
         if (eqIdx === -1) continue;
         const name = nameVal.slice(0, eqIdx).trim();
         const value = nameVal.slice(eqIdx + 1).trim();
-        
+
         let domain = ".forpsi.hu";
         let path = "/";
         let secure = true;
         let httpOnly = false;
-        
+        let maxAge = null;
+        let expires = null;
+
         for (const attr of attrs) {
-            const [k, v] = attr.split("=").map(s => s ? s.trim() : "");
-            const lowerK = k.toLowerCase();
+            const attrEq = attr.indexOf("=");
+            const lowerK = (attrEq === -1 ? attr : attr.slice(0, attrEq)).trim().toLowerCase();
+            const v = attrEq === -1 ? "" : attr.slice(attrEq + 1).trim();
             if (lowerK === "domain" && v) domain = v;
             else if (lowerK === "path" && v) path = v;
             else if (lowerK === "secure") secure = true;
             else if (lowerK === "httponly") httpOnly = true;
+            else if (lowerK === "max-age" && /^-?\d+$/.test(v)) maxAge = Number(v);
+            else if (lowerK === "expires" && !Number.isNaN(Date.parse(v))) expires = Date.parse(v);
         }
 
-        parsed.push({ name, value, domain, path, secure, httpOnly });
+        // Max-Age wins over Expires (RFC 6265)
+        let expiresAtMs = null;
+        if (maxAge !== null) {
+            expiresAtMs = now + (maxAge * 1000);
+        } else if (expires !== null) {
+            expiresAtMs = expires;
+        }
+
+        const cookie = { name, value, domain, path, secure, httpOnly, expired: expiresAtMs !== null && expiresAtMs <= now };
+        if (expiresAtMs !== null) {
+            cookie.expirationDate = Math.floor(expiresAtMs / 1000);
+        }
+        parsed.push(cookie);
     }
     return parsed;
+};
+
+/**
+ * Stores parsed Set-Cookie cookies in the jar; expired ones delete the stored cookie.
+ */
+const applySetCookies = async function(jar, cookies) {
+    for (const c of cookies) {
+        const domain = c.domain.startsWith(".") ? c.domain.slice(1) : c.domain;
+        const cookieUrl = `https://${domain}${c.path || "/"}`;
+        try {
+            if (c.expired) {
+                await jar.remove(cookieUrl, c.name);
+                continue;
+            }
+            const details = {
+                url: cookieUrl,
+                name: c.name,
+                value: c.value,
+                domain: c.domain,
+                path: c.path,
+                secure: c.secure,
+                httpOnly: c.httpOnly
+            };
+            if (c.expirationDate) {
+                details.expirationDate = c.expirationDate;
+            }
+            await jar.set(details);
+        } catch {}
+    }
 };
 
 /**
@@ -284,6 +331,8 @@ const performLogin = async function(partition, username, password, otpCode = "",
             }, (res) => {
                 const setCookies = res.headers["set-cookie"] || [];
                 const parsed = parseSetCookieHeaders(setCookies);
+                // Discard the body so the socket is released
+                res.resume();
                 resolve(parsed);
             });
             req.on("error", () => resolve([]));
@@ -292,20 +341,7 @@ const performLogin = async function(partition, username, password, otpCode = "",
         });
 
         // Set initial cookies into partition
-        for (const c of initialCookies) {
-            try {
-                const domain = c.domain.startsWith(".") ? c.domain.slice(1) : c.domain;
-                await jar.set({
-                    url: `https://${domain}${c.path || "/"}`,
-                    name: c.name,
-                    value: c.value,
-                    domain: c.domain,
-                    path: c.path,
-                    secure: c.secure,
-                    httpOnly: c.httpOnly
-                });
-            } catch {}
-        }
+        await applySetCookies(jar, initialCookies);
 
         const currentCookies = await jar.get().catch(() => []);
         const cookieHeader = currentCookies
@@ -368,22 +404,7 @@ const performLogin = async function(partition, username, password, otpCode = "",
         });
 
         // Set any new cookies into session
-        if (ajaxResult.cookies && ajaxResult.cookies.length > 0) {
-            for (const c of ajaxResult.cookies) {
-                try {
-                    const domain = c.domain.startsWith(".") ? c.domain.slice(1) : c.domain;
-                    await jar.set({
-                        url: `https://${domain}${c.path || "/"}`,
-                        name: c.name,
-                        value: c.value,
-                        domain: c.domain,
-                        path: c.path,
-                        secure: c.secure,
-                        httpOnly: c.httpOnly
-                    });
-                } catch {}
-            }
-        }
+        await applySetCookies(jar, ajaxResult.cookies || []);
 
         console.log("[Auth] AJAX result:", ajaxResult.json || ajaxResult.raw);
 
@@ -474,6 +495,7 @@ const checkAuthStatus = async function(partition) {
                 if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
                     const loc = res.headers.location;
                     if (loc.includes("index.php") || loc.includes("login")) {
+                        res.resume();
                         return resolve({ statusCode: res.statusCode, isRedirectToLogin: true, html: "" });
                     }
                 }
@@ -578,5 +600,7 @@ module.exports = {
     clearCredentials,
     logout,
     restoreCookies,
-    saveCookies
+    saveCookies,
+    parseSetCookieHeaders,
+    applySetCookies
 };

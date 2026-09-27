@@ -16,6 +16,7 @@ const DEFAULT_INTERVAL_MINUTES = 5;
 const DOMAIN_DB_NAME = "dns_updater";
 const DOMAIN_TABLE_NAME = "domains";
 const DOMAIN_REGEX = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i;
+const IPV4_REGEX = /^(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)$/;
 
 // UI Elements - General
 const elIp = document.getElementById("text-ip");
@@ -59,6 +60,8 @@ let domains = [];
 let isUserLoggedIn = false;
 let isSubmitting = false;
 let isSyncing = false;
+let queuedSync = null;
+let refreshesRunning = 0;
 
 // Persistent IP & Sync State
 let lastSyncedIp = localStorage.getItem("dns_last_synced_ip") || null;
@@ -87,8 +90,13 @@ const fetchCurrentIp = async function() {
     try {
         const res = await fetch(IP_CHECK_URL);
         const data = await res.json();
-        elIp.textContent = data.ip;
-        return data.ip;
+        const ip = String((data && data.ip) || "").trim();
+        if (!IPV4_REGEX.test(ip)) {
+            elIp.textContent = "Unable to fetch IP (invalid response)";
+            return null;
+        }
+        elIp.textContent = ip;
+        return ip;
     } catch (err) {
         elIp.textContent = "Unable to fetch IP";
         return null;
@@ -110,6 +118,37 @@ const withDomainsTable = async function(fn) {
     return result;
 };
 
+const createIcon = function(name, className = "") {
+    const icon = document.createElement("i");
+    icon.className = className;
+    icon.textContent = name;
+    return icon;
+};
+
+// Sync status chip for a domain row. Built with textContent only: messages can hold
+// values scraped from Forpsi, and this window has Node integration.
+const createStatusBadge = function(syncInfo) {
+    const styles = {
+        "updating": { "chip": "surface-variant", "icon": "sync", "text": "Syncing..." },
+        "synced": { "chip": "primary-container", "icon": "check" },
+        "up_to_date": { "chip": "surface-variant", "icon": "check" },
+        "error": { "chip": "error-container", "icon": "error", "text": "Failed" }
+    };
+    const style = syncInfo && styles[syncInfo.status];
+    if (!style) {
+        return null;
+    }
+    const badge = document.createElement("span");
+    badge.className = `chip small ${style.chip}`;
+    if (syncInfo.status === "error") {
+        badge.title = syncInfo.message || "Error updating";
+    } else if (syncInfo.message) {
+        badge.title = syncInfo.message;
+    }
+    badge.append(createIcon(style.icon, "small"), style.text || String(syncInfo.ip || ""));
+    return badge;
+};
+
 const renderDomains = function() {
     elDomainList.innerHTML = "";
     if (domains.length === 0) {
@@ -120,34 +159,26 @@ const renderDomains = function() {
         const row = document.createElement("div");
         row.className = "row middle";
 
-        const syncInfo = domainSyncStatuses[domain];
-        let statusBadgeHtml = "";
+        const nameBox = document.createElement("div");
+        nameBox.className = "max";
+        const nameText = document.createElement("div");
+        nameText.textContent = domain;
+        nameBox.appendChild(nameText);
 
-        if (syncInfo) {
-            if (syncInfo.status === "updating") {
-                statusBadgeHtml = `<span class="chip small surface-variant"><i class="small">sync</i>Syncing...</span>`;
-            } else if (syncInfo.status === "synced") {
-                statusBadgeHtml = `<span class="chip small primary-container" title="${syncInfo.message || ''}"><i class="small">check</i>${syncInfo.ip}</span>`;
-            } else if (syncInfo.status === "up_to_date") {
-                statusBadgeHtml = `<span class="chip small surface-variant" title="${syncInfo.message || ''}"><i class="small">check</i>${syncInfo.ip}</span>`;
-            } else if (syncInfo.status === "error") {
-                statusBadgeHtml = `<span class="chip small error-container" title="${syncInfo.message || 'Error updating'}"><i class="small">error</i>Failed</span>`;
-            }
-        }
-
-        row.innerHTML = `
-            <i>language</i>
-            <div class="max">
-                <div>${domain}</div>
-            </div>
-            ${statusBadgeHtml}
-            <button class="circle transparent" title="Delete domain">
-                <i>delete</i>
-            </button>
-        `;
-        row.querySelector("button").addEventListener("click", function() {
+        const deleteBtn = document.createElement("button");
+        deleteBtn.className = "circle transparent";
+        deleteBtn.title = "Delete domain";
+        deleteBtn.appendChild(createIcon("delete"));
+        deleteBtn.addEventListener("click", function() {
             removeDomain(domain);
         });
+
+        row.append(createIcon("language"), nameBox);
+        const badge = createStatusBadge(domainSyncStatuses[domain]);
+        if (badge) {
+            row.appendChild(badge);
+        }
+        row.appendChild(deleteBtn);
         elDomainList.appendChild(row);
     }
 };
@@ -235,8 +266,19 @@ const updateAuthUI = function(status) {
     }
 };
 
-// Check current session or attempt auto-login
-const checkAuth = async function() {
+// Check current session or attempt auto-login. Concurrent callers share one check,
+// so a button click during a sync does not start a second login.
+let authCheckPromise = null;
+const checkAuth = function() {
+    if (!authCheckPromise) {
+        authCheckPromise = checkAuthNow().finally(() => {
+            authCheckPromise = null;
+        });
+    }
+    return authCheckPromise;
+};
+
+const checkAuthNow = async function() {
     try {
         if (elHeaderAuthText) elHeaderAuthText.textContent = "Checking...";
         if (elHeaderAuthIcon) elHeaderAuthIcon.textContent = "sync";
@@ -343,7 +385,27 @@ const areAllDomainsSynced = function(targetIp) {
  * Synchronize DNS records on Forpsi only when the IP has changed or force sync is requested.
  */
 const syncDnsRecords = async function(currentIp, force = false) {
-    if (isSyncing) return;
+    // Take the lock before any await: overlapping runs could each create an A record
+    if (isSyncing) {
+        queuedSync = { "ip": currentIp, "force": force || Boolean(queuedSync && queuedSync.force) };
+        return;
+    }
+    isSyncing = true;
+    try {
+        await runSync(currentIp, force);
+    } finally {
+        isSyncing = false;
+    }
+
+    // Run a sync that was requested meanwhile (e.g. a domain added during a sync)
+    if (queuedSync) {
+        const next = queuedSync;
+        queuedSync = null;
+        await syncDnsRecords(next.ip, next.force);
+    }
+};
+
+const runSync = async function(currentIp, force) {
     if (!currentIp || currentIp.includes("Unable") || currentIp.includes("Loading")) {
         if (elTextSyncStatus) elTextSyncStatus.textContent = "DNS Sync: Waiting for valid public IP...";
         return;
@@ -376,7 +438,6 @@ const syncDnsRecords = async function(currentIp, force = false) {
         return;
     }
 
-    isSyncing = true;
     if (elTextSyncStatus) elTextSyncStatus.textContent = `DNS Sync: Synchronizing ${domains.length} domain(s) to ${currentIp}...`;
 
     for (const d of domains) {
@@ -426,20 +487,28 @@ const syncDnsRecords = async function(currentIp, force = false) {
         console.error("[DNS Sync] Error:", err);
         if (elTextSyncStatus) elTextSyncStatus.textContent = `DNS Sync error: ${err.message}`;
     } finally {
-        isSyncing = false;
         renderDomains();
     }
 };
 
 const doRefresh = async function(force = false) {
-    const ip = await fetchCurrentIp();
-    if (ip) {
-        await syncDnsRecords(ip, force);
+    refreshesRunning++;
+    try {
+        const ip = await fetchCurrentIp();
+        if (ip) {
+            await syncDnsRecords(ip, force);
+        }
+    } finally {
+        refreshesRunning--;
+        scheduleNextRefresh();
     }
-    scheduleNextRefresh();
 };
 
 const tickCountdown = function() {
+    // The countdown stays at 0 until the running refresh reschedules it
+    if (refreshesRunning > 0) {
+        return;
+    }
     const remaining = nextRefreshAt - Date.now();
     if (remaining <= 0) {
         doRefresh(false);

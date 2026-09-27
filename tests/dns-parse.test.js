@@ -60,6 +60,37 @@ test.describe("parseDnsRecords", () => {
         assert.equal(record.flags, "0");
     });
 
+    test.it("reads the selected type in any markup form", () => {
+        const variants = [
+            '<option value="CNAME" selected="selected">CNAME</option>',
+            '<option value="CNAME" selected >CNAME</option>',
+            '<option class="x" value="CNAME" selected>CNAME</option>',
+            "<option selected value='cname'>CNAME</option>"
+        ];
+        for (const option of variants) {
+            const html = editRow({ id: "1", type: "A", name: "home", rdata: "x." })
+                .replace(/<select name="type">[\s\S]*?<\/select>/, `<select class="t" name="type"><option value="A">A</option>${option}</select>`);
+            const records = dns.parseDnsRecords(html);
+            assert.deepEqual(records.map((r) => r.type), ["CNAME"], option);
+            assert.deepEqual(dns.findARecords(records, "home", "example.com"), [], option);
+        }
+    });
+
+    test.it("reads the type from a hidden input", () => {
+        const html = editRow({ id: "1", type: "A", name: "home", rdata: "1.2.3.4" })
+            .replace(/<select name="type">[\s\S]*?<\/select>/, '<input type="hidden" name="type" value="a">');
+        assert.deepEqual(dns.parseDnsRecords(html).map((r) => r.type), ["A"]);
+    });
+
+    test.it("skips records whose type cannot be read instead of assuming A", () => {
+        const noSelected = editRow({ id: "1", type: "none", name: "home", rdata: "x." });
+        const noField = editRow({ id: "2", type: "A", name: "home", rdata: "x." })
+            .replace(/<select name="type">[\s\S]*?<\/select>/, "");
+        const valueOnly = editRow({ id: "3", type: "A", name: "home", rdata: "x." })
+            .replace(/<option value="A" selected>/, '<option value="A" data-x="selected">');
+        assert.deepEqual(dns.parseDnsRecords(noSelected + noField + valueOnly), []);
+    });
+
     test.it("returns nothing for pages without edit rows", () => {
         assert.deepEqual(dns.parseDnsRecords("<html><body>Login</body></html>"), []);
     });
@@ -193,6 +224,23 @@ test.describe("parseDomainsList", () => {
     test.it("uses a single plain id in a row", () => {
         const html = `<tr><td>example.com</td><td><a href="/a.php?id=7">a</a></td></tr>`;
         assert.deepEqual(dns.parseDomainsList(html), [{ domain: "example.com", id: "7" }]);
+    });
+});
+
+test.describe("isValidIpv4", () => {
+    test.it("accepts dotted-quad addresses only", () => {
+        for (const ip of ["1.2.3.4", "0.0.0.0", "255.255.255.255", "10.0.0.1"]) {
+            assert.equal(dns.isValidIpv4(ip), true, ip);
+        }
+        for (const ip of ["", "256.1.1.1", "1.2.3", "1.2.3.4.5", " 1.2.3.4", "::1", "1.2.3.4\n", "<b>", undefined, null]) {
+            assert.equal(dns.isValidIpv4(ip), false, String(ip));
+        }
+    });
+
+    test.it("updateAllDomains rejects an invalid IP before any request", async () => {
+        const results = await dns.updateAllDomains("test-partition", ["example.com", "home.example.com"], "not-an-ip");
+        assert.deepEqual(results.map((r) => r.success), [false, false]);
+        assert.match(results[0].error, /not a valid IPv4 address/);
     });
 });
 

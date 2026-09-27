@@ -55,10 +55,12 @@ Electron derives its `userData` folder from it, and it must match `APP_NAME` in
    domain plus a host part (`findDomainIdForName`).
 4. **Update** (`dns.updateDnsForDomain`): loads `domain/domains-dns.php?id=<id>&new=1`,
    refuses to continue unless the page mentions the root domain (`pageMentionsDomain`),
-   parses the records, then POSTs `ak=record_save` (existing A record) or
+   parses the records (a row whose type cannot be read is skipped, never assumed
+   to be A), then POSTs `ak=record_save` (existing A record) or
    `ak=record_add` (none yet). Skips the POST if the IP is already correct. Record names
    are compared via `normalizeHostName` (`@`, FQDN, trailing dot); more than one A
-   record for the host is an error, never guessed.
+   record for the host is an error, never guessed. The IP must pass `isValidIpv4` before
+   any request, and `updateAllDomains` calls are queued so updates never overlap.
 5. **Verify**: reloads the DNS page and requires exactly one A record for the host,
    holding the new IP (`findVerifyProblem`). Never fall back to searching the page text.
 
@@ -128,7 +130,8 @@ via WSLg). The CLI needs nothing extra.
   run `main()` when `require.main === module` and export their helpers;
   `dns.js` exports its pure parsers/matchers (`parseDnsRecords`, `parseDomainsList`,
   `findDomainIdForName`, `normalizeHostName`, `findARecords`, `findVerifyProblem`,
-  `pageMentionsDomain`) for tests.
+  `pageMentionsDomain`, `isValidIpv4`) and `auth.js` its Set-Cookie handling
+  (`parseSetCookieHeaders`, `applySetCookies`) for tests.
 - `tests/electron.test.js`: binary loads, CLI under `ELECTRON_RUN_AS_NODE`, and the
   desktop smoke test via `tests/fixtures/electron-smoke.js` (starts `src/main.js`
   with an isolated `userData`, prints `SMOKE_OK` after the window loads, `SMOKE_FAIL`

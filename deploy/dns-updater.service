@@ -8,13 +8,16 @@ After=network-online.target
 
 [Service]
 Type=simple
-DynamicUser=yes
-# Persistent data (cookies, config, sync state) lives in /var/lib/dns-updater
+# Permanent system user that owns /etc/dns-updater (config.json holds the password)
+User=dns-updater
+Group=dns-updater
+Environment=DNS_UPDATER_CONF_DIR=/etc/dns-updater
+# Persistent data (cookies, sync state) lives in /var/lib/dns-updater
 StateDirectory=dns-updater
 Environment=DNS_UPDATER_DATA_DIR=/var/lib/dns-updater
-# FORPSI_USERNAME, FORPSI_PASSWORD, DNS_UPDATER_DOMAINS, DNS_UPDATER_INTERVAL
-# (override /opt/dns-updater/conf/config.json, which is optional here)
-EnvironmentFile=/etc/dns-updater.env
+# Optional: FORPSI_USERNAME, FORPSI_PASSWORD, DNS_UPDATER_DOMAINS, DNS_UPDATER_INTERVAL
+# override /etc/dns-updater/config.json if this file exists
+EnvironmentFile=-/etc/dns-updater.env
 ExecStart=/usr/bin/env node /opt/dns-updater/src/cli.js run
 Restart=on-failure
 RestartSec=30

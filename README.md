@@ -59,16 +59,20 @@ sudo apt install libnss3 libnspr4 libgbm1 libgtk-3-0 libasound2t64
 ## Run as a service (Linux)
 
 ```sh
-sudo mkdir -p /opt/dns-updater && sudo cp -r src conf /opt/dns-updater/
-sudo cp deploy/dns-updater.env.example /etc/dns-updater.env
-sudo chmod 600 /etc/dns-updater.env && sudo nano /etc/dns-updater.env   # credentials + domains
+sudo mkdir -p /opt/dns-updater && sudo cp -r src /opt/dns-updater/
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin dns-updater
+sudo mkdir -p /etc/dns-updater && sudo cp conf/config.json /etc/dns-updater/
+sudo chown -R dns-updater: /etc/dns-updater
+sudo chmod 700 /etc/dns-updater && sudo chmod 600 /etc/dns-updater/config.json
+sudo nano /etc/dns-updater/config.json                                  # credentials + domains
 sudo cp deploy/dns-updater.service /etc/systemd/system/
 sudo systemctl daemon-reload && sudo systemctl enable --now dns-updater
 journalctl -u dns-updater -f
 ```
 
-Keep the credentials in `/etc/dns-updater.env`: the service's unprivileged user cannot
-read a root-only `config.json`. Or use cron instead:
+The service runs as the `dns-updater` user and reads `/etc/dns-updater/config.json`,
+which only that user can read. Settings in an optional root-only `/etc/dns-updater.env`
+(see `deploy/dns-updater.env.example`) override the file. Or use cron instead:
 
 ```cron
 */5 * * * * FORPSI_USERNAME=... FORPSI_PASSWORD=... node /opt/dns-updater/src/cli.js once --domain example.com
